@@ -1,5 +1,5 @@
 from backend.agents.traffic_prediction import run as predict
-from backend.agents.routing import run as routing
+from backend.agents.routes import run as routing
 from backend.agents.mobility import run as mobility
 
 
