@@ -7,3 +7,5 @@ httpx
 pandas
 numpy
 pydeck
+fastapi
+uvicorn

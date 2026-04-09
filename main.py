@@ -1,6 +1,23 @@
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from backend.orchestrator import run
 
-if __name__ == "__main__":
-    user_input = "Rain at 6 PM in Whitefield"
-    result = run(user_input)
-    print(result)
+app = FastAPI()
+
+# Allow frontend to connect
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.get("/")
+def home():
+    return {"message": "AI City Brain API running 🚀"}
+
+@app.get("/analyze")
+def analyze(query: str):
+    result = run(query)
+    return result
