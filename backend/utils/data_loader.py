@@ -216,28 +216,57 @@ async def get_matrix_travel_times(origin: dict, destinations: list) -> list:
 async def get_live_data(location: str) -> dict:
     location = location.lower().strip()
 
-    cached = get_cached(location)
+    # 🔥 FIX 1: Extract clean area name (remove ", bangalore, india")
+    clean_location = location.split(",")[0].strip()
+
+    print("📍 INPUT LOCATION:", location)
+    print("📍 CLEAN LOCATION:", clean_location)
+
+    # ---------------------------------------
+    # CACHE CHECK
+    # ---------------------------------------
+    cached = get_cached(clean_location)
     if cached:
         return cached
 
-    coords = await get_coords(location)
+    # ---------------------------------------
+    # GET COORDS (USE CLEAN NAME FIRST)
+    # ---------------------------------------
+    coords = await get_coords(clean_location)
+
+    # 🔥 FIX 2: If dynamic fails, fallback to known locations manually
     if not coords:
-        return {"error": "invalid location"}
+        print("⚠️ Dynamic geocode failed, trying known locations...")
+
+        if clean_location in LOCATION_COORDS:
+            coords = LOCATION_COORDS[clean_location]
+            print("✅ Using predefined coords:", coords)
+        else:
+            return {"error": f"invalid location: {location}"}
 
     lat, lon = coords["lat"], coords["lon"]
+    print("📌 FINAL COORDS:", lat, lon)
 
+    # ---------------------------------------
+    # FETCH TRAFFIC DATA
+    # ---------------------------------------
     import asyncio
     flow, incidents = await asyncio.gather(
         get_traffic_flow(lat, lon),
         get_incidents(lat, lon),
     )
 
+    # ---------------------------------------
+    # RESULT
+    # ---------------------------------------
     result = {
-        "location":    location,
+        "location": clean_location,   # 🔥 FIX 3: return actual area
         "coordinates": coords,
-        "flow":        flow,
-        "incidents":   incidents,
+        "flow": flow,
+        "incidents": incidents,
     }
 
-    set_cache(location, result)
+    # CACHE STORE
+    set_cache(clean_location, result)
+
     return result

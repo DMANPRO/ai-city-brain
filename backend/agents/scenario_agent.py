@@ -21,7 +21,7 @@ def extract_location(text: str) -> str:
     match = re.search(r"in ([a-zA-Z\s]+)", text)
     if match:
         location = match.group(1).strip()
-        return f"{location}, bengaluru"
+        return f"{location.title()}, Bangalore, India"
 
     # fallback
     return "bengaluru"
