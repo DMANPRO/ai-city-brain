@@ -8,36 +8,41 @@ from backend.utils.weather_api import get_weather
 
 
 # ---------------------------------------
-# EXTRACT LOCATION (DYNAMIC)
+# EXTRACT LOCATION (IMPROVED 🔥)
 # ---------------------------------------
 def extract_location(text: str) -> str:
     """
-    Extract location using simple NLP pattern
+    Extract location using NLP pattern
     Example: 'traffic in whitefield at 6pm'
     """
     text = text.lower()
 
-    # common patterns
-    match = re.search(r"in ([a-zA-Z\s]+)", text)
+    # Capture text after "in" but stop before "at"
+    match = re.search(r"in ([a-zA-Z\s]+?)(?: at|$)", text)
+
     if match:
         location = match.group(1).strip()
         return f"{location}, bengaluru"
 
-    # fallback
     return "bengaluru"
 
 
 # ---------------------------------------
-# EXTRACT TIME (SMART)
+# EXTRACT TIME (SMART + NOW SUPPORT 🔥)
 # ---------------------------------------
 def extract_time(text: str) -> int:
     """
-    Extract hour from text (supports 6pm, 18, etc.)
+    Extract hour from text (supports 6pm, 8am, 'now')
     """
     text = text.lower()
 
+    # ✅ handle "now"
+    if "now" in text:
+        return datetime.now().hour
+
     # match time like 6pm, 8am
     match = re.search(r"(\d{1,2})(am|pm)?", text)
+
     if match:
         hour = int(match.group(1))
         suffix = match.group(2)
@@ -76,6 +81,6 @@ def run(input_text: str) -> dict:
 
     return {
         "location": location,
-        "time": time,
+        "time": time,        # 👈 feeds into traffic_prediction
         "weather": weather
     }
