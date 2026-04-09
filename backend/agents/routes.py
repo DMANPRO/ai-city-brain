@@ -94,6 +94,47 @@ def get_rerouting_strategy(severity: str, incident_count: int):
 
 
 # ---------------------------------------
+# NEW: GENERATE ROUTE OPTIONS
+# ---------------------------------------
+def generate_route_options(reroute_plan, severity):
+    """
+    Convert abstract routes into frontend-usable route objects
+    """
+    base_routes = reroute_plan.get("routes", [])
+
+    route_options = []
+
+    for i, r in enumerate(base_routes):
+        route_options.append({
+            "route": r,
+            "traffic": severity,
+            "eta": 20 + (i * 5),  # simulated ETA
+            "distance": 5 + (i * 2)
+        })
+
+    # fallback if no routes
+    if not route_options:
+        route_options.append({
+            "route": "main_route",
+            "traffic": severity,
+            "eta": 15,
+            "distance": 5
+        })
+
+    return route_options
+
+
+# ---------------------------------------
+# NEW: CHOOSE BEST ROUTE
+# ---------------------------------------
+def choose_best_route(route_options):
+    """
+    Select best route based on ETA
+    """
+    return sorted(route_options, key=lambda x: x["eta"])[0]
+
+
+# ---------------------------------------
 # EMERGENCY HANDLING
 # ---------------------------------------
 def emergency_override(pred):
@@ -126,7 +167,7 @@ def traffic_distribution(pred):
 
 
 # ---------------------------------------
-# MAIN ROUTING FUNCTION
+# MAIN ROUTING FUNCTION (UPGRADED)
 # ---------------------------------------
 def run(pred: dict) -> dict:
 
@@ -142,13 +183,19 @@ def run(pred: dict) -> dict:
     # Step 3: rerouting strategy
     reroute_plan = get_rerouting_strategy(severity, pred["incident_count"])
 
-    # Step 4: emergency override
+    # Step 4: NEW route generation
+    route_options = generate_route_options(reroute_plan, severity)
+
+    # Step 5: NEW best route selection
+    best_route = choose_best_route(route_options)
+
+    # Step 6: emergency override
     emergency_plan = emergency_override(pred)
 
-    # Step 5: traffic distribution
+    # Step 7: traffic distribution
     distribution_plan = traffic_distribution(pred)
 
-    # Step 6: priority level
+    # Step 8: priority level
     priority = {
         "critical": "🚨 immediate",
         "high": "⚠️ urgent",
@@ -156,11 +203,18 @@ def run(pred: dict) -> dict:
         "low": "✅ normal"
     }.get(severity, "normal")
 
+    # Step 9: FINAL OUTPUT (UPGRADED)
     return {
         "severity": severity,
         "priority": priority,
+
         "signal_control": signal_plan,
+
+        # 🔥 upgraded routing
         "rerouting": reroute_plan,
+        "routes": route_options,
+        "best_route": best_route,
+
         "emergency": emergency_plan,
         "distribution": distribution_plan
     }

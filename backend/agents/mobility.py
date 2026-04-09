@@ -3,28 +3,37 @@
 # ---------------------------------------
 
 # ---------------------------------------
-# MODE RECOMMENDATION
+# MODE RECOMMENDATION (UPGRADED)
 # ---------------------------------------
-def recommend_mode(pred):
+def recommend_mode(pred, best_route=None, rerouted=False):
     severity = pred["congestion"]
     speed = pred["avg_speed"]
 
+    # 🔥 NEW: route-aware logic
+    if rerouted:
+        return "metro"
+
     if severity == "high":
         return "metro"
+
     elif severity == "medium":
         if speed < 20:
             return "bike"
         return "auto"
+
     else:
         return "car"
 
 
 # ---------------------------------------
-# TRAVEL ADVISORY
+# TRAVEL ADVISORY (UPGRADED)
 # ---------------------------------------
-def travel_advisory(pred):
+def travel_advisory(pred, rerouted=False):
     severity = pred["congestion"]
     trend = pred["trend"]
+
+    if rerouted:
+        return "System rerouted you to avoid congestion"
 
     if severity == "high":
         return "Avoid travel if possible or switch to public transport"
@@ -36,10 +45,14 @@ def travel_advisory(pred):
 
 
 # ---------------------------------------
-# DELAY ESTIMATION
+# DELAY ESTIMATION (UPGRADED WITH ROUTES)
 # ---------------------------------------
-def estimate_delay(pred):
+def estimate_delay(pred, best_route=None):
     score = pred["congestion_score"]
+
+    # 🔥 NEW: if route has ETA use that
+    if best_route and "eta" in best_route:
+        return f"{best_route['eta']} min (optimized route)"
 
     if score > 90:
         return "30-45 min delay"
@@ -52,10 +65,13 @@ def estimate_delay(pred):
 
 
 # ---------------------------------------
-# SMART RECOMMENDATIONS
+# SMART RECOMMENDATIONS (UPGRADED)
 # ---------------------------------------
-def smart_suggestions(pred):
+def smart_suggestions(pred, rerouted=False):
     suggestions = []
+
+    if rerouted:
+        suggestions.append("Route optimized to reduce congestion")
 
     if pred["incident_count"] > 0:
         suggestions.append("Possible roadblocks ahead")
@@ -101,19 +117,37 @@ def user_experience(pred):
 
 
 # ---------------------------------------
-# MAIN FUNCTION
+# NEW: TRAVEL EFFICIENCY SCORE
+# ---------------------------------------
+def efficiency_score(pred, best_route=None):
+    base = 100 - pred["congestion_score"]
+
+    if best_route and "eta" in best_route:
+        base += max(0, 30 - best_route["eta"])
+
+    return min(100, max(0, base))
+
+
+# ---------------------------------------
+# MAIN FUNCTION (UPGRADED)
 # ---------------------------------------
 def run(pred: dict) -> dict:
 
     if "error" in pred:
         return pred
 
-    mode = recommend_mode(pred)
-    advisory = travel_advisory(pred)
-    delay = estimate_delay(pred)
-    suggestions = smart_suggestions(pred)
+    # 🔥 NEW: get routing data from pred (passed by orchestrator)
+    best_route = pred.get("best_route", {})
+    rerouted = pred.get("rerouted", False)
+
+    # original logic (enhanced)
+    mode = recommend_mode(pred, best_route, rerouted)
+    advisory = travel_advisory(pred, rerouted)
+    delay = estimate_delay(pred, best_route)
+    suggestions = smart_suggestions(pred, rerouted)
     confidence_msg = interpret_confidence(pred["confidence"])
     experience = user_experience(pred)
+    efficiency = efficiency_score(pred, best_route)
 
     return {
         "recommended_mode": mode,
@@ -121,5 +155,10 @@ def run(pred: dict) -> dict:
         "estimated_delay": delay,
         "experience_level": experience,
         "confidence": confidence_msg,
-        "suggestions": suggestions
+        "suggestions": suggestions,
+
+        # 🔥 NEW FIELDS
+        "best_route": best_route,
+        "rerouted": rerouted,
+        "efficiency_score": efficiency
     }
