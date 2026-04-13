@@ -1,10 +1,10 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from backend.orchestrator import run
 
 app = FastAPI()
 
-# Allow frontend to connect
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -13,11 +13,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+class AnalyzeRequest(BaseModel):
+    location: str
+    weather: str = "clear"
+    time: str | None = None
+    simulation_minutes: int = 0
+
 @app.get("/")
 def home():
-    return {"message": "AI City Brain API running 🚀"}
+    return {"message": "AI City Brain API running"}
 
-@app.get("/analyze")
-def analyze(query: str):
-    result = run(query)
-    return result
+@app.post("/analyze")
+def analyze(req: AnalyzeRequest):
+    query = f"{req.weather} at {req.time or 'now'} in {req.location}"
+    return run(query)

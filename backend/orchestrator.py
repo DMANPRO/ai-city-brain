@@ -1,175 +1,216 @@
-# backend/orchestrator.py
-# Person 4 - Integration & Orchestrator
-# Branch: person4-integration
+#backend/orchestrator.py
+import re, asyncio
 
-from backend.agents import scenario_agent
-from backend.agents import traffic_prediction
-from backend.agents import propagation
-from backend.agents import explanation_agent
+def _try_import(path, fn="run"):
+    try:
+        import importlib
+        mod = importlib.import_module(path)
+        return getattr(mod, fn, None)
+    except Exception:
+        return None
 
-import re
-from datetime import datetime, timedelta
-from backend.utils.weather_api import get_weather_for_datetime
+scenario_run    = _try_import("backend.agents.scenario_agent")
+traffic_run     = _try_import("backend.agents.traffic_prediction")
+propagation_run = _try_import("backend.agents.propagation")
+routes_run      = _try_import("backend.agents.routes")
+mobility_run    = _try_import("backend.agents.mobility")
+explanation_run = _try_import("backend.agents.explanation_agent")
 
-# congestion_detection.py is Person 3's file - safe import
-try:
-    from backend.agents import congestion_detection
-except ImportError:
-    class congestion_detection:
-        @staticmethod
-        def run(input_data):
-            return input_data
+WEATHER_MAP = {
+    "heavy rain":"rainy","rain":"rainy","raining":"rainy","rainy":"rainy",
+    "flood":"flooded","storm":"stormy","stormy":"stormy",
+    "fog":"foggy","mist":"foggy","haze":"foggy","foggy":"foggy",
+    "clear":"clear","sunny":"clear","cloudy":"cloudy",
+}
 
-# routing.py is Person 3's file - safe import
-try:
-    from backend.agents import routing
-except ImportError:
-    class routing:
-        @staticmethod
-        def run(input_data):
-            return {
-                "severity": "unknown",
-                "priority": "normal",
-                "signal_control": {"signal_mode": "normal_operation", "description": "N/A", "cycle_adjustment": "0%"},
-                "rerouting": {"reroute": False, "strategy": "no_change", "routes": [], "priority": "low"},
-                "emergency": {"emergency_mode": False},
-                "distribution": {"distribution": "normal", "description": "N/A"}
-            }
+def _get_coords_sync(location: str) -> dict:
+    """Sync wrapper around the async geocoder."""
+    try:
+        from backend.utils.data_loader import get_coords
+        return asyncio.run(get_coords(location))
+    except Exception:
+        return {"lat": 12.9716, "lon": 77.5946}
 
-# mobility.py is Person 3's file - safe import
-try:
-    from backend.agents import mobility
-except ImportError:
-    class mobility:
-        @staticmethod
-        def run(input_data):
-            return {
-                "recommended_mode": "car",
-                "travel_advisory": "Conditions are stable for travel",
-                "estimated_delay": "No significant delay",
-                "experience_level": "Good",
-                "confidence": "Moderate certainty",
-                "suggestions": ["Smooth traffic expected"]
-            }
+def _clean_location(raw: str) -> str:
+    loc = str(raw).lower().strip()
+    loc = re.sub(r',?\s*(bengaluru|bangalore).*$', '', loc).strip()
+    return re.sub(r'\s+', ' ', loc) or "bengaluru"
 
-def extract_target_datetime(text: str) -> datetime | None:
-    """
-    Extracts a target date+time from the user input text.
-    Supports: tomorrow, next week, day names, 'April 15', '15th', etc.
-    Returns a datetime object, or None if no date is found.
-    """
-    text_lower = text.lower()
-    now = datetime.now()
-
-    # Extract hour
-    hour = now.hour
-    time_match = re.search(r'(\d{1,2})\s*(am|pm)', text_lower)
-    if time_match:
-        hour = int(time_match.group(1))
-        if time_match.group(2) == 'pm' and hour != 12:
-            hour += 12
-        elif time_match.group(2) == 'am' and hour == 12:
-            hour = 0
-
-    def make_dt(base): return base.replace(hour=hour, minute=0, second=0, microsecond=0)
-
-    if 'tomorrow'  in text_lower: return make_dt(now + timedelta(days=1))
-    if 'next week' in text_lower: return make_dt(now + timedelta(days=7))
-    if 'next month' in text_lower: return make_dt(now + timedelta(days=30))
-
-    day_map = {'monday':0,'tuesday':1,'wednesday':2,'thursday':3,
-               'friday':4,'saturday':5,'sunday':6}
-    for day_name, day_num in day_map.items():
-        if day_name in text_lower:
-            ahead = (day_num - now.weekday()) % 7 or 7
-            return make_dt(now + timedelta(days=ahead))
-
-    month_map = {
-        'january':1,'february':2,'march':3,'april':4,'may':5,'june':6,
-        'july':7,'august':8,'september':9,'october':10,'november':11,'december':12,
-        'jan':1,'feb':2,'mar':3,'apr':4,'jun':6,'jul':7,'aug':8,
-        'sep':9,'oct':10,'nov':11,'dec':12
+def _parse_input(text: str) -> dict:
+    """Emergency fallback parser when scenario_agent unavailable."""
+    from backend.agents.scenario_agent import extract_location, extract_time, extract_weather
+    return {
+        "location": extract_location(text),
+        "time":     extract_time(text),
+        "weather":  extract_weather(text) or "clear",
     }
-    for month_str, month_num in month_map.items():
-        if month_str in text_lower:
-            day_match = re.search(r'(\d{1,2})(?:st|nd|rd|th)?', text_lower)
-            if day_match:
-                try:
-                    dt = now.replace(month=month_num, day=int(day_match.group(1)),
-                                     hour=hour, minute=0, second=0, microsecond=0)
-                    return dt if dt >= now else dt.replace(year=now.year + 1)
-                except Exception:
-                    pass
-    return None
 
-# ── Main Pipeline ─────────────────────────────────────────────────────────────
+def _fallback_congestion(weather: str, time_str: str):
+    bad  = weather in ("rainy","stormy","flooded","foggy")
+    peak = any(h in time_str.replace(" ","") for h in
+               ["8am","9am","6pm","7pm","5pm","08:","09:","17:","18:","19:"])
+    if bad and peak: return "high",   82.0
+    if bad or peak:  return "high",   68.0
+    return               "medium",    45.0
+
+def _fallback_zones(location: str) -> list:
+    coords = _get_coords_sync(location)
+    return [{"zone": location, "lat": coords["lat"], "lon": coords["lon"]}]
+
+def _safe_float(v, default=0.0):
+    try:    return float(v)
+    except: return default
 
 def run(user_input: str) -> dict:
-    """
-    Full AI City Brain pipeline.
-    Input:  Plain text e.g. "Rain at 6 PM in Whitefield"
-    Output: Complete traffic intelligence dict
-    """
+    try:
+        # ── Step 1: Scenario ─────────────────────────────────────────
+        scenario = {}
+        if scenario_run:
+            out = scenario_run(user_input)
+            if isinstance(out, dict) and "error" not in out:
+                scenario = out
+        if not scenario:
+            scenario = _parse_input(user_input)
 
-    print(f"\n[Orchestrator] Input: {user_input}")
+        location = _clean_location(scenario.get("location", "bengaluru"))
+        weather  = str(scenario.get("weather", "clear")).strip()
+        time_str = str(scenario.get("time", "now")).strip()
 
-    # Step 1 — Scenario Agent (Person 2) + date-aware weather override
-    target_dt = extract_target_datetime(user_input)
-    scenario  = scenario_agent.run(user_input)
+        # ── Step 2: Traffic prediction ────────────────────────────────
+        traffic = {}
+        if traffic_run:
+            out = traffic_run({"location": location, "weather": weather, "time": time_str})
+            if isinstance(out, dict) and "error" not in out:
+                traffic = out
 
-    if target_dt:
-        location_raw = scenario.get("location", "bengaluru")
-        scenario["weather"]     = get_weather_for_datetime(location_raw, target_dt)
-        scenario["target_date"] = target_dt.strftime("%d %b %Y, %I:%M %p")
-        print(f"[Step 1] Date detected: {target_dt} → weather: {scenario['weather']}")
-    else:
-        scenario["target_date"] = "Now (Live)"
+        cong_label, cong_score = _fallback_congestion(weather, time_str)
+        traffic.setdefault("location",         location)
+        traffic.setdefault("weather",          weather)
+        traffic.setdefault("time",             time_str)
+        traffic.setdefault("congestion",       cong_label)
+        traffic.setdefault("congestion_score", cong_score)
+        traffic.setdefault("avg_speed",        22.0)
+        traffic.setdefault("free_flow_speed",  60.0)
+        traffic.setdefault("traffic_volume",   "medium")
+        traffic.setdefault("incident_count",   0)
+        traffic.setdefault("incident_types",   [])
+        traffic.setdefault("road_work_active", False)
+        traffic.setdefault("roadwork_active",  False)
+        traffic.setdefault("confidence",       "medium")
+        traffic.setdefault("trend",            "stable")
+        traffic.setdefault("trend_delta",      "")
+        traffic["location"]        = location
+        traffic["congestion_score"]= _safe_float(traffic["congestion_score"], cong_score)
+        traffic["avg_speed"]       = _safe_float(traffic["avg_speed"], 22.0)
+        traffic["free_flow_speed"] = _safe_float(traffic["free_flow_speed"], 60.0)
+        traffic["roadwork_active"] = bool(traffic.get("road_work_active",
+                                          traffic.get("roadwork_active", False)))
+        traffic["road_work_active"]= traffic["roadwork_active"]
 
-    print(f"[Step 1] Scenario: {scenario}")
+        # ── Step 3: Propagation ───────────────────────────────────────
+        prop = {}
+        if propagation_run:
+            out = propagation_run({"location": location})
+            if isinstance(out, dict) and "error" not in out:
+                prop = out
+        prop.setdefault("spread_level",   "medium")
+        prop.setdefault("affected_zones", _fallback_zones(location))
+        zones = [z for z in prop.get("affected_zones", [])
+                 if isinstance(z, dict) and "lat" in z and "lon" in z]
+        if not zones:
+            zones = _fallback_zones(location)
+        prop["affected_zones"] = zones
 
-    # Step 2 — Traffic Prediction (Person 1)
-    # Uses TomTom API + weather multiplier → congestion, speed, volume, trend
-    traffic = traffic_prediction.run(scenario)
-    if "error" in traffic:
-        print(f"[Step 2] Error: {traffic['error']}")
-        return traffic
-    print(f"[Step 2] Traffic: {traffic}")
+        # ── Step 4: Routes ────────────────────────────────────────────
+        route = {}
+        if routes_run:
+            out = routes_run(traffic)
+            if isinstance(out, dict) and "error" not in out:
+                route = out
+        route.setdefault("severity",       "high")
+        route.setdefault("priority",       "Urgent")
+        route.setdefault("signal_control", {"signal_mode":"adaptive_control","description":"Dynamic","cycle_adjustment":"+25%"})
+        route.setdefault("rerouting",      {"reroute":True,"strategy":"load_balancing","routes":[],"priority":"high"})
+        route.setdefault("routes",         [{"route":"main_route","traffic":"medium","eta":20,"distance":5}])
+        route.setdefault("best_route",     {"route":"main_route","eta":20,"distance":5})
+        route.setdefault("emergency",      {"emergency_mode":False})
+        route.setdefault("distribution",   {"distribution":"normal","description":"Normal flow"})
 
-    # Step 3 — Congestion Detection (Person 3)
-    # Detects hotspots from traffic data
-    detection = congestion_detection.run(traffic)
-    print(f"[Step 3] Detection done")
+        # ── Step 5: Mobility ──────────────────────────────────────────
+        mobility = {}
+        if mobility_run:
+            out = mobility_run({**traffic, "best_route": route["best_route"],
+                                "rerouted": route["rerouting"].get("reroute", False)})
+            if isinstance(out, dict) and "error" not in out:
+                mobility = out
+        mobility.setdefault("recommended_mode", "Metro")
+        mobility.setdefault("travel_advisory",  "Check live conditions before travelling.")
+        mobility.setdefault("estimated_delay",  "10-20 min")
+        mobility.setdefault("experience_level", "Moderate")
+        mobility.setdefault("suggestions",      [])
+        mobility.setdefault("efficiency_score", 55)
+        mobility.setdefault("best_route",       route["best_route"])
+        mobility.setdefault("rerouted",         False)
 
-    # Step 4 — Propagation (Person 2)
-    # Simulates how congestion spreads to nearby zones using TomTom
-    prop = propagation.run(traffic)
-    print(f"[Step 4] Propagation: {prop}")
+        # ── Step 6: Explanation ───────────────────────────────────────
+        merged = {**traffic, **prop, **route, **mobility,
+                  "location": location, "weather": weather, "time": time_str}
+        explanation = ""
+        if explanation_run:
+            out = explanation_run(merged)
+            if isinstance(out, dict):
+                merged.update(out)
+                explanation = merged.get("explanation", "")
+            elif isinstance(out, str):
+                explanation = out
+        if not explanation:
+            delay = mobility.get("estimated_delay", "N/A")
+            mode  = mobility.get("recommended_mode", "car")
+            explanation = (
+                f"In {location.title()}, {weather} conditions are causing "
+                f"{traffic['congestion']} congestion with average speed "
+                f"{traffic['avg_speed']} km/h. Estimated delay: {delay}. "
+                f"Best travel option: {mode}."
+            )
 
-    # Merge: carry all traffic data forward + add propagation-specific fields
-    # routing and mobility both need keys from traffic (congestion_score, avg_speed, etc.)
-    merged = {**traffic}
-    merged["spread_level"]   = prop.get("spread_level", "unknown")
-    merged["affected_zones"] = prop.get("affected_zones", [])
+        # ── Resolve coordinates for map ───────────────────────────────
+        coords = _get_coords_sync(location)
 
-    # Step 5 — Routing (Person 3)
-    # Signal control + rerouting strategy based on congestion_score, trend
-    route = routing.run(merged)
-    print(f"[Step 5] Routing done")
-
-    # Merge routing results in for mobility
-    merged = {**merged, **route}
-
-    # Step 6 — Mobility Recommendation (Person 3)
-    # Best travel mode, delay estimate, advisory based on full traffic data
-    mob = mobility.run(merged)
-    print(f"[Step 6] Mobility done")
-
-    # Build complete final dict for explanation agent
-    final_data = {**merged, **mob}
-
-    # Step 7 — Explanation Agent (Person 4 - YOU)
-    # Converts all data into human-readable explanation using OpenAI
-    final = explanation_agent.run(final_data)
-    print(f"[Orchestrator] Pipeline complete ✅\n")
-
-    return final
+        return {
+            "location":         location,
+            "coordinates":      coords,
+            "weather":          weather,
+            "time":             time_str,
+            "congestion":       traffic["congestion"],
+            "congestion_score": traffic["congestion_score"],
+            "avg_speed":        traffic["avg_speed"],
+            "free_flow_speed":  traffic["free_flow_speed"],
+            "traffic_volume":   traffic["traffic_volume"],
+            "incident_count":   traffic["incident_count"],
+            "incident_types":   traffic["incident_types"],
+            "road_work_active": traffic["road_work_active"],
+            "trend":            traffic["trend"],
+            "trend_delta":      traffic["trend_delta"],
+            "confidence":       traffic["confidence"],
+            "spread_level":     prop["spread_level"],
+            "affected_zones":   zones,
+            "estimated_delay":  mobility["estimated_delay"],
+            "recommended_mode": mobility["recommended_mode"],
+            "travel_advisory":  mobility["travel_advisory"],
+            "suggestions":      mobility["suggestions"],
+            "experience_level": mobility["experience_level"],
+            "efficiency_score": mobility["efficiency_score"],
+            "routes":           route["routes"],
+            "best_route":       route["best_route"],
+            "explanation":      explanation,
+            "agent_outputs": {
+                "scenario":    scenario,
+                "traffic":     traffic,
+                "propagation": prop,
+                "routes":      route,
+                "mobility":    mobility,
+            },
+        }
+    except Exception as e:
+        import traceback
+        return {"error": str(e), "traceback": traceback.format_exc()}
