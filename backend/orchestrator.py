@@ -61,6 +61,7 @@ def _safe_float(v, default=0.0):
     try:    return float(v)
     except: return default
 
+# ─── Main run ─────────────────────────────────────────────────────────────────
 def run(user_input: str) -> dict:
     try:
         # ── Step 1: Scenario ─────────────────────────────────────────
