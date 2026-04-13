@@ -1,164 +1,81 @@
-# ---------------------------------------
-# MOBILITY ENGINE (USER-LEVEL INTELLIGENCE)
-# ---------------------------------------
+# backend/agents/mobility.py
 
-# ---------------------------------------
-# MODE RECOMMENDATION (UPGRADED)
-# ---------------------------------------
-def recommend_mode(pred, best_route=None, rerouted=False):
-    severity = pred["congestion"]
-    speed = pred["avg_speed"]
-
-    # 🔥 NEW: route-aware logic
+def recommend_mode(congestion: str, speed: float, rerouted: bool) -> str:
     if rerouted:
-        return "metro"
+        return "Metro"
+    if congestion in ("critical", "high"):
+        return "Metro"
+    if congestion in ("moderate", "medium"):
+        return "Bike" if speed < 20 else "Auto"
+    return "Car"
 
-    if severity == "high":
-        return "metro"
-
-    elif severity == "medium":
-        if speed < 20:
-            return "bike"
-        return "auto"
-
-    else:
-        return "car"
-
-
-# ---------------------------------------
-# TRAVEL ADVISORY (UPGRADED)
-# ---------------------------------------
-def travel_advisory(pred, rerouted=False):
-    severity = pred["congestion"]
-    trend = pred["trend"]
-
+def travel_advisory(congestion: str, trend: str, rerouted: bool) -> str:
     if rerouted:
-        return "System rerouted you to avoid congestion"
-
-    if severity == "high":
-        return "Avoid travel if possible or switch to public transport"
-
+        return "System rerouted you to avoid congestion. Follow the suggested route."
+    if congestion in ("critical", "high"):
+        return "Avoid travel if possible. Switch to public transport."
     if trend == "worsening":
-        return "Start early to avoid increasing congestion"
+        return "Traffic is worsening. Start early to avoid delays."
+    if congestion in ("moderate", "medium"):
+        return "Moderate conditions. Allow extra time for your journey."
+    return "Traffic is clear. Good time to travel."
 
-    return "Conditions are stable for travel"
-
-
-# ---------------------------------------
-# DELAY ESTIMATION (UPGRADED WITH ROUTES)
-# ---------------------------------------
-def estimate_delay(pred, best_route=None):
-    score = pred["congestion_score"]
-
-    # 🔥 NEW: if route has ETA use that
+def estimate_delay(score: float, best_route: dict) -> str:
     if best_route and "eta" in best_route:
-        return f"{best_route['eta']} min (optimized route)"
+        return f"{best_route['eta']} min (optimised route)"
+    if score > 90: return "45–60 min delay"
+    if score > 75: return "30–45 min delay"
+    if score > 60: return "20–30 min delay"
+    if score > 40: return "10–20 min delay"
+    return "Under 10 min delay"
 
-    if score > 90:
-        return "30-45 min delay"
-    elif score > 70:
-        return "20-30 min delay"
-    elif score > 50:
-        return "10-20 min delay"
-    else:
-        return "No significant delay"
-
-
-# ---------------------------------------
-# SMART RECOMMENDATIONS (UPGRADED)
-# ---------------------------------------
-def smart_suggestions(pred, rerouted=False):
+def smart_suggestions(pred: dict, rerouted: bool) -> list:
     suggestions = []
-
     if rerouted:
-        suggestions.append("Route optimized to reduce congestion")
-
-    if pred["incident_count"] > 0:
-        suggestions.append("Possible roadblocks ahead")
-
-    if pred["roadwork_active"]:
-        suggestions.append("Road construction may slow traffic")
-
-    if pred["trend"] == "worsening":
-        suggestions.append("Traffic likely to increase soon")
-
-    if pred["congestion"] == "high":
-        suggestions.append("Consider alternate routes or public transport")
-
+        suggestions.append("Route optimised to reduce your journey time.")
+    if pred.get("incident_count", 0) > 0:
+        suggestions.append("Active incidents reported — expect possible delays.")
+    if pred.get("roadwork_active", False):
+        suggestions.append("Road construction active — reduced lanes ahead.")
+    if pred.get("trend") == "worsening":
+        suggestions.append("Congestion is increasing — depart sooner if possible.")
+    if pred.get("congestion") in ("critical", "high"):
+        suggestions.append("Consider alternate routes or public transport today.")
     if not suggestions:
-        suggestions.append("Smooth traffic expected")
-
+        suggestions.append("Conditions are smooth. No action needed.")
     return suggestions
 
-
-# ---------------------------------------
-# CONFIDENCE INTERPRETATION
-# ---------------------------------------
-def interpret_confidence(conf):
-    return {
-        "high": "Reliable prediction",
-        "medium": "Moderate certainty",
-        "low": "Prediction may vary"
-    }.get(conf, "Unknown confidence")
-
-
-# ---------------------------------------
-# USER EXPERIENCE SCORE
-# ---------------------------------------
-def user_experience(pred):
-    score = pred["congestion_score"]
-
-    if score > 80:
-        return "Poor"
-    elif score > 60:
-        return "Moderate"
-    else:
-        return "Good"
-
-
-# ---------------------------------------
-# NEW: TRAVEL EFFICIENCY SCORE
-# ---------------------------------------
-def efficiency_score(pred, best_route=None):
-    base = 100 - pred["congestion_score"]
-
+def efficiency_score(score: float, best_route: dict) -> int:
+    base = max(0, 100 - int(score))
     if best_route and "eta" in best_route:
-        base += max(0, 30 - best_route["eta"])
-
+        base += max(0, 30 - best_route.get("eta", 30))
     return min(100, max(0, base))
 
+def user_experience(score: float) -> str:
+    if score > 80: return "Poor"
+    if score > 55: return "Moderate"
+    return "Good"
 
-# ---------------------------------------
-# MAIN FUNCTION (UPGRADED)
-# ---------------------------------------
 def run(pred: dict) -> dict:
-
     if "error" in pred:
         return pred
+    try:
+        congestion  = str(pred.get("congestion", "medium")).lower()
+        speed       = float(pred.get("avg_speed", 20))
+        score       = float(pred.get("congestion_score", 50))
+        trend       = str(pred.get("trend", "stable")).lower()
+        best_route  = pred.get("best_route", {})
+        rerouted    = bool(pred.get("rerouted", False))
 
-    # 🔥 NEW: get routing data from pred (passed by orchestrator)
-    best_route = pred.get("best_route", {})
-    rerouted = pred.get("rerouted", False)
-
-    # original logic (enhanced)
-    mode = recommend_mode(pred, best_route, rerouted)
-    advisory = travel_advisory(pred, rerouted)
-    delay = estimate_delay(pred, best_route)
-    suggestions = smart_suggestions(pred, rerouted)
-    confidence_msg = interpret_confidence(pred["confidence"])
-    experience = user_experience(pred)
-    efficiency = efficiency_score(pred, best_route)
-
-    return {
-        "recommended_mode": mode,
-        "travel_advisory": advisory,
-        "estimated_delay": delay,
-        "experience_level": experience,
-        "confidence": confidence_msg,
-        "suggestions": suggestions,
-
-        # 🔥 NEW FIELDS
-        "best_route": best_route,
-        "rerouted": rerouted,
-        "efficiency_score": efficiency
-    }
+        return {
+            "recommended_mode": recommend_mode(congestion, speed, rerouted),
+            "travel_advisory":  travel_advisory(congestion, trend, rerouted),
+            "estimated_delay":  estimate_delay(score, best_route),
+            "suggestions":      smart_suggestions(pred, rerouted),
+            "experience_level": user_experience(score),
+            "efficiency_score": efficiency_score(score, best_route),
+            "best_route":       best_route,
+            "rerouted":         rerouted,
+        }
+    except Exception as e:
+        return {"error": str(e)}
